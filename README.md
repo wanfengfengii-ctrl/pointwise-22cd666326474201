@@ -2,7 +2,7 @@
 
 Python 3.11 标准库离线分析工程。仪器人员追加校准和测量修订，分析员冻结明确输入，质控员读取规范含量、单侧修正响应及自足导出。无第三方依赖。
 
-运行：`python3 -B verify.py` 执行全部回归；`python3 -B demo.py` 在临时目录演示接纳、冻结、求解、正反方向、源更正、关闭重开和导出。demo 清理自己的数据库及导出。运行 argv 见 .pointwise-runtime.json 和 RUN_MANIFEST.json，命令从项目根目录执行。
+运行：`python3 -B verify.py` 执行全部回归；`python3 -B demo.py` 在临时目录演示接纳、冻结、求解、正反方向、源更正、关闭重开、导出与有限路径。`python3 -B path_examples.py [--v2]` 核对固定手算样例。demo 清理自己的数据库及导出。运行 argv 见 .pointwise-runtime.json 和 RUN_MANIFEST.json，命令从项目根目录执行。
 
 ## 一天的工作
 
@@ -69,4 +69,20 @@ finally:
 
 读取和导出不导入求解器，不重新计算。修改读取对象不会污染后续读取。导出写入同目录临时文件，完整写入并 fsync 后原子替换；失败清理本次临时文件，保留原目标与数据库成果，无额外成功标记。有理数编码为 {"$fraction":[分子,正分母]}，约分形式唯一；archive/codec.py 的 decode_payload 可恢复。包内含来源、顺序、单位、A、y、d、x、Ax、残差、h、Ah，脱离数据库可核对。
 
-四个测试文件覆盖手算、独立行列式与分层投影核账、精确右参数区间、坐标拒绝、冻结后更正、对象隔离、持久重开、重复初始化、发布失败重试和导出失败。POINTWISE_SCENARIO 行在真实断言后打印独立预期、实测及下游值，不替代完整回归。
+四个原测试文件覆盖手算、独立行列式与分层投影核账、精确右参数区间、坐标拒绝、冻结后更正、对象隔离、持久重开、重复初始化、发布失败重试和导出失败。POINTWISE_SCENARIO 行在真实断言后打印独立预期、实测及下游值，不替代完整回归。
+
+## V2：有限修正路径与组分限值
+
+在 V1 之上新增 `trace` 与 `acceptable`，详见 PATHS.md 与 HANDOFF.md：
+
+```python
+from spectral.response.requests import trace
+from spectral.response.limits import acceptable
+path_id = trace(c, parent_id, [-1, 1], 0, 1)
+report_id = acceptable(c, path_id, {"k1": (None, "3/4")})
+```
+
+- trace(c, parent_id, d, lo, hi, fail_at=None) 对父 unmix 全部记录生成 [lo,hi] 上的完整分段仿射规范含量路径，kind 为 "path"。每段 x(t)=constant+t*slope 用全局 t；断点、端点及系数均为 Fraction，相同式合并且无缝覆盖。
+- acceptable(c, path_id, bounds, fail_at=None) 只消费已保存路径，按组分上下闭限值返回每行全部最大闭区间及孤立点，kind 为 "acceptable"。空 bounds 返回整个父区间，无合格值为 []。
+- trace 只读父成果冻结快照，acceptable 只读指定 path；均不重新求解。更正、对象修改、关闭重开不改旧成果。稳定性、失败钩子和原接口行为与 V1 一致。
+- tests/test_paths.py 独立核账整段分层最优性、完整覆盖、断点合并、限值闭端点、两种发布失败、稳定重试、隔离与重开；demo.py 展示跨断点、孤立点与更正后重开。

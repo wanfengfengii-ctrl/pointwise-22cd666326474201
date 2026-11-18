@@ -12,7 +12,16 @@ from spectral.measurements.intake import save_batch
 from spectral.measurements.revisions import append_measurement_revision
 from spectral.measurements.cohorts import freeze
 from spectral.unmixing.jobs import unmix
-from spectral.response.requests import direction
+from spectral.response.requests import direction, trace
+from spectral.response.limits import acceptable
+
+
+TRIANGLE = [
+    {"lo": F(0), "hi": F(1), "constant": [F(1, 2), F(1, 2), F(0)],
+     "slope": [F(-1, 2), F(-1, 2), F(1)]},
+    {"lo": F(1), "hi": F(2), "constant": [F(0), F(0), F(0)],
+     "slope": [F(0), F(0), F(1)]},
+]
 
 
 def main():
@@ -32,14 +41,26 @@ def main():
             parent = unmix(c, cohort)
             positive = direction(c, parent, fixture["positive"])
             negative = direction(c, parent, fixture["negative"])
+            # A finite correction path over the whole closed interval: the
+            # canonical formula crosses a breakpoint at t=1 and is continued,
+            # not replaced by the zero-point tangent.
+            path = trace(c, parent, [-1, 1], 0, 2)
+            isolated = acceptable(c, path, {"tracer": (1, 1)})
+            broad = read(c, acceptable(c, path, {}))
             parent_saved = read(c, parent)
             response_saved = read(c, positive)
+            path_saved = read(c, path)
+            isolated_saved = read(c, isolated)
             x = parent_saved["data"]["rows"][0]["coefficients"]
             plus = response_saved["data"]["rows"][0]["coefficients"]
             minus = read(c, negative)["data"]["rows"][0]["coefficients"]
             assert x == [F(1, 2), F(1, 2), F(0)]
             assert plus == [F(0), F(0), F(1)]
             assert minus == [F(0), F(0), F(0)]
+            segments = path_saved["data"]["rows"][0]["segments"]
+            assert segments == TRIANGLE
+            assert isolated_saved["data"]["rows"][0]["intervals"] == [[F(1), F(1)]]
+            assert broad["data"]["rows"][0]["intervals"] == [[F(0), F(2)]]
             newer = save_dictionary(c, fixture["channels"], fixture["components"],
                                     fixture["channel_units"], fixture["component_units"],
                                     [[2, 2, 0], [0, 0, 2]], previous=dictionary)
@@ -47,6 +68,10 @@ def main():
             new_parent = unmix(c, freeze(c, newer, [corrected]))
             self_check = read(c, new_parent)["data"]["rows"][0]["coefficients"]
             assert self_check == [F(3, 4), F(3, 4), F(0)]
+            # The corrected sources change heads only; the old path keeps its
+            # own frozen parent chain and the report keeps its own path.
+            assert read(c, path) == path_saved
+            assert read(c, isolated) == isolated_saved
             export(c, positive, destination)
         finally:
             c.close()
@@ -55,6 +80,8 @@ def main():
             c.initialize()
             assert read(c, parent) == parent_saved
             assert read(c, positive) == response_saved
+            assert read(c, path) == path_saved
+            assert read(c, isolated) == isolated_saved
             package = decode_payload(destination.read_text(encoding="utf-8"))
             artifacts = {item["id"]: item for item in package["chain"]["artifacts"]}
             assert artifacts[parent] == parent_saved
@@ -71,8 +98,21 @@ def main():
                                "spectral/unmixing/jobs.py", "spectral/response/requests.py",
                                "spectral/archive/export.py"],
                 "oracle": "equal-column hand split, one-sided max(0,y2), frozen reopen and export identity"}))
+            print("POINTWISE_SCENARIO " + encode_payload({
+                "case_id": "V5.finite_path",
+                "input": {"A": fixture["matrix"], "y": fixture["records"][0]["values"],
+                          "d": [-1, 1], "lo": 0, "hi": 2},
+                "expected": TRIANGLE,
+                "actual": path_saved["data"]["rows"][0]["segments"],
+                "downstream_expected": {"tracer==1": [[F(1), F(1)]], "empty bounds": [[F(0), F(2)]]},
+                "downstream_actual": {"tracer==1": isolated_saved["data"]["rows"][0]["intervals"],
+                                      "empty bounds": broad["data"]["rows"][0]["intervals"]},
+                "code_paths": ["spectral/response/paths.py", "spectral/response/limits.py",
+                               "spectral/response/requests.py"],
+                "oracle": "hand piecewise canonical map across a breakpoint, plus an isolated point"}))
             print(encode_payload({"old_parent": parent_saved, "positive": response_saved,
                                   "negative": read(c, negative), "new_parent": read(c, new_parent),
+                                  "path": path_saved, "isolated_report": isolated_saved,
                                   "export_record_count": len(package["chain"]["records"])}))
         finally:
             c.close()
